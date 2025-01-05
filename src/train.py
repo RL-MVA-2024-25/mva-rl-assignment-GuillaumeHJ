@@ -37,7 +37,9 @@ class ReplayBuffer:
 def greedy_action(network, state):
     device = "cuda" if next(network.parameters()).is_cuda else "cpu"
     with torch.no_grad():
-        Q = network(torch.Tensor(state).unsqueeze(0).to(device))
+        if not isinstance(state, torch.Tensor):
+            state = torch.tensor(state, device=device, dtype=torch.float32)  # Convert state to tensor and move to devic
+        Q = network(state.unsqueeze(0))
         return torch.argmax(Q).item()
 
 class ProjectAgent:
@@ -70,7 +72,7 @@ class ProjectAgent:
                           nn.Linear(nb_neurons, n_action)
                           ).to(self.device)
         else:
-            self.model = model
+            self.model = model.to(self.device)  # Ensure model is on the same device
     
 
         self.gamma = self.config['gamma']
@@ -89,6 +91,7 @@ class ProjectAgent:
     def gradient_step(self):
         if len(self.memory) > self.batch_size:
             X, A, R, Y, D = self.memory.sample(self.batch_size)
+            X, A, R, Y, D = X.to(self.device), A.to(self.device), R.to(self.device), Y.to(self.device), D.to(self.device)
             QYmax = self.model(Y).max(1)[0].detach()
             update = torch.addcmul(R, 1-D, QYmax, value=self.gamma)
             QXA = self.model(X).gather(1, A.to(torch.long).unsqueeze(1))
@@ -102,6 +105,7 @@ class ProjectAgent:
         episode = 0
         episode_cum_reward = 0
         state, _ = env.reset()
+        state = torch.tensor(state, device=self.device, dtype=torch.float32)  # Move state to device
         epsilon = self.epsilon_max
         step = 0
 
@@ -118,6 +122,7 @@ class ProjectAgent:
 
             # step
             next_state, reward, done, trunc, _ = env.step(action)
+            next_state = torch.tensor(next_state, device=self.device, dtype=torch.float32)  # Move next_state to device
             self.memory.append(state, action, reward, next_state, done)
             episode_cum_reward += reward
 
@@ -134,6 +139,7 @@ class ProjectAgent:
                       ", episode return ", '{:4.1f}'.format(episode_cum_reward),
                       sep='')
                 state, _ = env.reset()
+                state = torch.tensor(state, device=self.device, dtype=torch.float32)  # Move reset state to device
                 episode_return.append(episode_cum_reward)
                 episode_cum_reward = 0
             else:
