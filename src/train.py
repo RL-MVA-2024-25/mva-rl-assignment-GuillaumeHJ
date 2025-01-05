@@ -12,8 +12,6 @@ env = TimeLimit(
 )  # The time wrapper limits the number of steps in an episode at 200.
 # Now is the floor is yours to implement the agent and train it.
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 state_dim = env.observation_space.shape[0]
 n_action = env.action_space.n 
 nb_neurons=24
@@ -46,6 +44,9 @@ class ProjectAgent:
 
     def __init__(self, config=None, model=None):
 
+         # Define the device first
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Use GPU if available
+
         if config is None:
             self.config = {
                 'nb_actions': env.action_space.n,
@@ -66,16 +67,16 @@ class ProjectAgent:
                           nn.ReLU(),
                           nn.Linear(nb_neurons, nb_neurons),
                           nn.ReLU(), 
-                          nn.Linear(nb_neurons, n_action))#.to(device)
+                          nn.Linear(nb_neurons, n_action)
+                          ).to(self.device)
         else:
             self.model = model
-        
-        device = "cuda" if next(self.model.parameters()).is_cuda else "cpu"
+    
 
         self.gamma = self.config['gamma']
         self.batch_size = self.config['batch_size']
         self.nb_actions = self.config['nb_actions']
-        self.memory = ReplayBuffer(self.config['buffer_size'], device)
+        self.memory = ReplayBuffer(self.config['buffer_size'], self.device)
         self.epsilon_max = self.config['epsilon_max']
         self.epsilon_min = self.config['epsilon_min']
         self.epsilon_stop = self.config['epsilon_decay_period']
