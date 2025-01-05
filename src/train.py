@@ -30,7 +30,12 @@ class ReplayBuffer:
         self.index = (self.index + 1) % self.capacity
     def sample(self, batch_size):
         batch = random.sample(self.data, batch_size)
-        return list(map(lambda x:torch.Tensor(np.array(x)).to(self.device), list(zip(*batch))))
+        return [
+            torch.tensor(np.array(x).astype(np.float32), device=self.device)
+            if isinstance(x[0], (float, int))
+            else torch.tensor(x, device=self.device)
+            for x in zip(*batch)
+        ]
     def __len__(self):
         return len(self.data)
 
