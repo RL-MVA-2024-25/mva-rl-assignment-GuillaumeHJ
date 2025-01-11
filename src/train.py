@@ -98,7 +98,7 @@ class ProjectAgent:
 
     def load(self):
         current_path = os.getcwd()
-        self.path = current_path + "final_dqn_encoder_decoder.pt"
+        self.path = current_path + "/final_dqn_encoder_decoder.pt"
         self.model = DQN.to(self.device)
         self.model.load_state_dict(torch.load(self.path, map_location=self.device))
         self.model.eval()
