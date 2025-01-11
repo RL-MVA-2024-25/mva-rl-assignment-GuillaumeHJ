@@ -1,27 +1,25 @@
 from gymnasium.wrappers import TimeLimit
 from env_hiv import HIVPatient
+from evaluate import evaluate_HIV
 import torch
 import torch.nn as nn
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from tqdm import tqdm
+from copy import deepcopy
 
 env = TimeLimit(
     env=HIVPatient(domain_randomization=False), max_episode_steps=200
 )  # The time wrapper limits the number of steps in an episode at 200.
 # Now is the floor is yours to implement the agent and train it.
 
-state_dim = env.observation_space.shape[0]
-n_action = env.action_space.n 
-nb_neurons=24
-
-
 class ReplayBuffer:
     def __init__(self, capacity, device):
-        self.capacity = int(capacity) # capacity of the buffer
+        self.capacity = capacity
         self.data = []
-        self.index = 0 # index of the next cell to be filled
+        self.index = 0
         self.device = device
     def append(self, s, a, r, s_, d):
         if len(self.data) < self.capacity:
@@ -30,52 +28,83 @@ class ReplayBuffer:
         self.index = (self.index + 1) % self.capacity
     def sample(self, batch_size):
         batch = random.sample(self.data, batch_size)
-        return [
-            torch.tensor(np.array(x).astype(np.float32), device=self.device)
-            if isinstance(x[0], (float, int))
-            else torch.tensor(x, device=self.device)
-            for x in zip(*batch)
-        ]
+        return list(map(lambda x:torch.Tensor(np.array(x)).to(self.device), list(zip(*batch))))
     def __len__(self):
         return len(self.data)
 
-    
-def greedy_action(network, state):
-    device = "cuda" if next(network.parameters()).is_cuda else "cpu"
-    with torch.no_grad():
-        Q = network(torch.Tensor(state).unsqueeze(0).to(device))
-        return torch.argmax(Q).item()
-    
+hidden_layer_dim = 256
+latent_dim = 128
 
+DQN = torch.nn.Sequential(
+            torch.nn.Linear(env.observation_space.shape[0], hidden_layer_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_layer_dim, hidden_layer_dim),
+            torch.nn.ReLU(),
+            # smaller latent space
+            torch.nn.Linear(hidden_layer_dim, latent_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(latent_dim, hidden_layer_dim),
+            # come back to higher dimensional space
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_layer_dim, hidden_layer_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_layer_dim, env.action_space.n)
+)
+
+
+# ProjectAgent class to define agent logic
 class ProjectAgent:
-    def __init__(self, config, model):
-        device = "cuda" if next(model.parameters()).is_cuda else "cpu"
-        self.gamma = config['gamma']
-        self.batch_size = config['batch_size']
-        self.nb_actions = config['nb_actions']
-        self.memory = ReplayBuffer(config['buffer_size'], device)
-        self.epsilon_max = config['epsilon_max']
-        self.epsilon_min = config['epsilon_min']
-        self.epsilon_stop = config['epsilon_decay_period']
-        self.epsilon_delay = config['epsilon_delay_decay']
-        self.epsilon_step = (self.epsilon_max-self.epsilon_min)/self.epsilon_stop
-        self.model = model 
-        self.criterion = torch.nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config['learning_rate'])
-    
-    def gradient_step(self):
-        if len(self.memory) > self.batch_size:
-            X, A, R, Y, D = self.memory.sample(self.batch_size)
-            QYmax = self.model(Y).max(1)[0].detach()
-            #update = torch.addcmul(R, self.gamma, 1-D, QYmax)
-            update = torch.addcmul(R, 1-D, QYmax, value=self.gamma)
-            QXA = self.model(X).gather(1, A.to(torch.long).unsqueeze(1))
-            loss = self.criterion(QXA, update.unsqueeze(1))
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step() 
-    
-    def train(self, env, max_episode):
+    def __init__(self):
+        # Configuration for the agent
+        self.nb_actions = env.action_space.n
+        self.learning_rate = 0.001
+        self.gamma = 0.95
+        self.buffer_size = 100000
+        self.epsilon_min = 0.01
+        self.epsilon_max = 1.0
+        self.epsilon_decay_period = 50000
+        self.epsilon_delay_decay = 1000
+        self.epsilon_delay = 1000
+        self.epsilon_step = (self.epsilon_max - self.epsilon_min) / self.epsilon_decay_period
+        self.batch_size = 256
+        self.gradient_steps = 100
+        self.update_target_strategy = 'replace'
+        self.update_target_freq = 500
+        self.update_target_tau = 0.01
+        self.criterion = torch.nn.SmoothL1Loss()
+        self.fine_tuning = False
+
+
+        # Linking first the models to GPU device
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if not self.fine_tuning:
+            self.model = DQN.to(self.device)
+        self.target_model = deepcopy(self.model).to(self.device)
+        self.memory = ReplayBuffer(self.buffer_size, self.device)
+
+        # Adam Optimizers
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate)
+
+    def act(self, observation, use_random=False):
+        # Acting greedily towards Q
+        with torch.no_grad():  # Disable gradient computation for action selection
+            Q = self.model(torch.Tensor(observation).unsqueeze(0).to(self.device))
+            return torch.argmax(Q).item()
+
+
+    def save(self, path):
+        self.path = path + "final_dqn.pt"
+        torch.save(self.model.state_dict(), self.path)
+
+    def load(self):
+        current_path = os.getcwd()
+        self.path = current_path + "final_dqn_encoder_decoder.pt"
+        self.model = DQN.to(self.device)
+        self.model.load_state_dict(torch.load(self.path, map_location=self.device))
+        self.model.eval()
+
+    def train(self, max_episode):
+        previous_val = 0
         episode_return = []
         episode = 0
         episode_cum_reward = 0
@@ -84,48 +113,75 @@ class ProjectAgent:
         step = 0
 
         while episode < max_episode:
-            # update epsilon
+            # Decay epsilon after a certain number of steps
             if step > self.epsilon_delay:
-                epsilon = max(self.epsilon_min, epsilon-self.epsilon_step)
+                epsilon = max(self.epsilon_min, epsilon - self.epsilon_step)
 
-            # select epsilon-greedy action
+            # Action selection (epsilon-greedy)
             if np.random.rand() < epsilon:
-                action = env.action_space.sample()
+                action = env.action_space.sample()  # Exploration
             else:
-                action = greedy_action(self.model, state)
+                action = self.act(state)  # Exploitation
 
-            # step
+            # Take action, observe result
             next_state, reward, done, trunc, _ = env.step(action)
             self.memory.append(state, action, reward, next_state, done)
             episode_cum_reward += reward
 
-            # train
-            self.gradient_step()
+            # Train the model
+            for _ in range(self.gradient_steps):
+                if len(self.memory) > self.batch_size:
+                    X, A, R, Y, D = self.memory.sample(self.batch_size)
+                    QYmax = self.target_model(Y).max(1)[0].detach()
+                    update = torch.addcmul(R, 1 - D, QYmax, value=self.gamma)
+                    QXA = self.model(X).gather(1, A.to(torch.long).unsqueeze(1))
+                    loss = self.criterion(QXA, update.unsqueeze(1))
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
 
-            # next transition
+            # Update target model periodically
+            if self.update_target_strategy == 'replace':
+                if step % self.update_target_freq == 0:
+                    self.target_model.load_state_dict(self.model.state_dict())
+
             step += 1
-            if done:
+            if done or trunc:
                 episode += 1
-                print("Episode ", '{:3d}'.format(episode), 
-                      ", epsilon ", '{:6.2f}'.format(epsilon), 
-                      ", batch size ", '{:5d}'.format(len(self.memory)), 
-                      ", episode return ", '{:4.1f}'.format(episode_cum_reward),
-                      sep='')
+                val_score = evaluate_HIV(agent=self, nb_episode=1)
+
+                # Print training progress
+                print(f"Episode {episode:3d} | "
+                      f"Epsilon {epsilon:6.2f} | "
+                      f"Batch Size {len(self.memory):5d} | "
+                      f"Episode Return {episode_cum_reward:.2e} | "
+                      f"Evaluation Score {val_score:.2e}")
                 state, _ = env.reset()
+
+                # Save model if evaluation score improves
+                if val_score > previous_val:
+                    previous_val = val_score
+                    self.best_model = deepcopy(self.model).to(self.device)
+                    path = os.getcwd()
+                    self.save(path)
                 episode_return.append(episode_cum_reward)
                 episode_cum_reward = 0
             else:
                 state = next_state
 
+        # Load the best model and save it
+        self.model.load_state_dict(self.best_model.state_dict())
+        path = os.getcwd()
+        self.save(path)
         return episode_return
-    
 
-    def act(self, observation, use_random=False):
-        action = greedy_action(self.model, observation)
-        return action
+def seed_everything(seed: int = 42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.cuda.manual_seed_all(seed)
 
-    def save(self, path):
-        torch.save(self.model.state_dict(), os.path.join(path, "saved_models"))
-
-    def load(self):
-         self.model.load_state_dict(torch.load("saved_models.pth", map_location=torch.device('cpu')))
