@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import random
 import numpy as np
-import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
 from copy import deepcopy
