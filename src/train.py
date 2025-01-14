@@ -33,18 +33,18 @@ class ReplayBuffer:
         return len(self.data)
 
 hidden_layer_dim = 256
-latent_dim = 128
+inner_dim = 128
 
 DQN = torch.nn.Sequential(
             torch.nn.Linear(env.observation_space.shape[0], hidden_layer_dim),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_layer_dim, hidden_layer_dim),
             torch.nn.ReLU(),
-            # smaller latent space
-            torch.nn.Linear(hidden_layer_dim, latent_dim),
+            torch.nn.Linear(hidden_layer_dim, inner_dim),
             torch.nn.ReLU(),
-            torch.nn.Linear(latent_dim, hidden_layer_dim),
-            # come back to higher dimensional space
+            torch.nn.Linear(inner_dim, inner_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(inner_dim, hidden_layer_dim),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_layer_dim, hidden_layer_dim),
             torch.nn.ReLU(),
@@ -53,27 +53,27 @@ DQN = torch.nn.Sequential(
 
 
 # ProjectAgent class to define agent logic
+# ProjectAgent class to define agent logic
 class ProjectAgent:
     def __init__(self):
         # Configuration for the agent
         self.nb_actions = env.action_space.n
-        self.learning_rate = 0.001
+        self.learning_rate = 0.0001
         self.gamma = 0.95
-        self.buffer_size = 100000
+        self.buffer_size = 50000
         self.epsilon_min = 0.01
         self.epsilon_max = 1.0
         self.epsilon_decay_period = 50000
         self.epsilon_delay_decay = 1000
-        self.epsilon_delay = 1000
+        self.epsilon_delay = 100
         self.epsilon_step = (self.epsilon_max - self.epsilon_min) / self.epsilon_decay_period
-        self.batch_size = 256
-        self.gradient_steps = 100
+        self.batch_size = 1024
+        self.gradient_steps = 10
         self.update_target_strategy = 'replace'
         self.update_target_freq = 500
         self.update_target_tau = 0.01
         self.criterion = torch.nn.SmoothL1Loss()
         self.fine_tuning = False
-
 
         # Linking first the models to GPU device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -82,7 +82,7 @@ class ProjectAgent:
         self.target_model = deepcopy(self.model).to(self.device)
         self.memory = ReplayBuffer(self.buffer_size, self.device)
 
-        # Adam Optimizers
+        # Choice of optimizers for both networks : Adams
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate)
 
     def act(self, observation, use_random=False):
@@ -98,7 +98,7 @@ class ProjectAgent:
 
     def load(self):
         current_path = os.getcwd()
-        self.path = current_path + "/final_dqn_encoder_decoder.pt"
+        self.path = current_path + "/final_dqn_deeper_network_more_gradient_steps.pt"
         self.model = DQN.to(self.device)
         self.model.load_state_dict(torch.load(self.path, map_location=self.device))
         self.model.eval()
