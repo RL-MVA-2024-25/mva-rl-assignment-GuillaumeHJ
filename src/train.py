@@ -6,7 +6,6 @@ import torch.nn as nn
 import random
 import numpy as np
 import os
-from tqdm import tqdm
 from copy import deepcopy
 
 env = TimeLimit(
